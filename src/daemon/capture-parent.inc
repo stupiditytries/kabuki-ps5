@@ -20,18 +20,43 @@ struct FocusLease {
     std::uint64_t opening=0; // the opening the retakes count for
     unsigned retakes=0;
 };
+
+struct Fingerprint {
+    std::uint64_t offset;
+    std::size_t count;
+    std::uint64_t hash;
+};
+
+struct FingerprintSet {
+    const char* firmware;
+    Fingerprint checks[3];
+};
+
+const FingerprintSet supported_sets[] = {
+    {"13.20", {
+        {0x6a4880, 40, 0x505f765f05540c68ULL},
+        {0x6eeb30, 29, 0x1d9c912126922f03ULL},
+        {0x69e334, 16, 0xb7ec89ce3a985c5eULL}
+    }},
+    {"13.60", {
+        {0x6a4880, 40, 0xd15dc735f907ea34ULL},
+        {0x6eeb30, 29, 0x1a394c083b0a9224ULL},
+        {0x69e334, 16, 0x4bb0a4a243e6241eULL}
+    }}
+};
+
 static std::uint64_t focus_fingerprint(const unsigned char* bytes,std::size_t count) {
     std::uint64_t h=0xcbf29ce484222325ULL;
     for(std::size_t i=0;i<count;++i) h=(h^bytes[i])*0x100000001b3ULL;
     return h;
 }
-static bool focus_code(FocusLease& lease,std::uint64_t offset,std::size_t count,std::uint64_t hash) {
+static bool focus_code(FocusLease& lease,const char* firmware,std::uint64_t offset,std::size_t count,std::uint64_t hash) {
     unsigned char bytes[64];
     if(count>sizeof bytes) return false;
     const int rc=mdbg_copyout(lease.core,(intptr_t)(lease.base+offset),bytes,count);
     const auto observed=rc?0:focus_fingerprint(bytes,count);
-    note("FOCUS fingerprint offset=%llx read_rc=%d observed=%llx match=%u",
-         (unsigned long long)offset,rc,(unsigned long long)observed,!rc&&observed==hash);
+    note("FOCUS fingerprint firmware=%s offset=%llx read_rc=%d observed=%llx match=%u",
+         firmware,(unsigned long long)offset,rc,(unsigned long long)observed,!rc&&observed==hash);
     return !rc&&observed==hash;
 }
 static bool focus_snapshot(const FocusLease& lease,FocusSnapshot& result) {
@@ -63,14 +88,30 @@ static bool prepare_focus(FocusLease& lease,const Ready& ready) {
     }
     lease.base=(std::uint64_t)kernel_dynlib_mapbase_addr(lease.core,handle);
     note("FOCUS Core module base=%llx",(unsigned long long)lease.base);
-    if(!user_address(lease.base)||
-       !focus_code(lease,0x6a4880,40,0x505f765f05540c68ULL)||
-       !focus_code(lease,0x6eeb30,29,0x1d9c912126922f03ULL)||
-       !focus_code(lease,0x69e334,16,0xb7ec89ce3a985c5eULL)) {
+    if(!user_address(lease.base)) {
+        note("FOCUS unavailable: invalid Core module base; no ownership change"); return false;
+    }
+    const FingerprintSet* matched = nullptr;
+    for (const auto& set : supported_sets) {
+        bool all_match = true;
+        // Run every check, even after a mismatch, so the log contains all
+        // observed values needed to derive a new firmware profile in one run.
+        for (const auto& f : set.checks)
+            all_match = focus_code(lease, set.firmware, f.offset, f.count, f.hash) && all_match;
+        if (all_match) {
+            matched = &set;
+            break;
+        }
+    }
+
+    if(!matched) {
         note("FOCUS unavailable: firmware fingerprints did not match; no ownership change"); return false;
     }
-    if(mdbg_copyout(lease.core,(intptr_t)(lease.base+0x20d30f0),&lease.manager,sizeof lease.manager)||
-       !user_address(lease.manager)) {
+    note("FOCUS firmware profile %s matched",matched->firmware);
+    const int manager_rc=mdbg_copyout(lease.core,(intptr_t)(lease.base+0x20d30f0),&lease.manager,sizeof lease.manager);
+    note("FOCUS manager pointer offset=20d30f0 read_rc=%d value=%llx valid=%u",manager_rc,
+         (unsigned long long)lease.manager,!manager_rc&&user_address(lease.manager));
+    if(manager_rc||!user_address(lease.manager)) {
         note("FOCUS unavailable: controller manager pointer invalid"); return false;
     }
     alignas(16) unsigned char info[256]{};
@@ -191,9 +232,11 @@ struct FocusGuard {
         }
         if(now>=l.next_log) {
             l.next_log=now+1000000;
-            note("FOCUS status panel=%u lease=%u app=0x%08x controller=0x%08x snapshot=%u heartbeat_fresh=%u",
+            note("FOCUS status panel=%u lease=%u app=0x%08x controller=0x%08x snapshot=%u heartbeat_fresh=%u pad_port=%d connected=%u pad_rc=0x%08x buttons=0x%08x samples=%llu toggles=%llu",
                 active,l.held,l.observed?(unsigned)l.current.application:0xffffffffU,
-                l.observed?(unsigned)l.current.controller:0xffffffffU,l.observed,fresh);
+                l.observed?(unsigned)l.current.controller:0xffffffffU,l.observed,fresh,
+                (int)s.pad_port,s.pad_connected,(unsigned)s.pad_rc,s.pad_buttons,
+                (unsigned long long)s.pad_samples,(unsigned long long)s.toggles);
         }
     }
     bool finish() {

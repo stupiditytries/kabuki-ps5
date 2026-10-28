@@ -32,7 +32,7 @@ common=(-Oz -ffunction-sections -fdata-sections -march=znver2 -fPIC -Wall -Wextr
         -DPROBE_INPUT -DPROBE_TOGGLE -DPROBE_NATIVE)
 
 # The worker that runs inside ShellUI: PUI widgets, input, the interface.
-"$sdk/bin/prospero-clang++" "${common[@]}" -Werror -Wno-deprecated-literal-operator -std=c++20 \
+"$sdk/bin/prospero-clang++" "${common[@]}" -Werror -std=c++20 \
     -I"$repo/src/shellui" -I"$repo/src/ui" \
     -shared -Wl,--gc-sections -Wl,-e,elf_main -Wl,-Bsymbolic -Wl,--hash-style=sysv -Wl,--eh-frame-hdr \
     -Wl,-T,"$repo/src/shellui/constructors.ld" \
@@ -57,7 +57,7 @@ if [[ $dev == 1 ]]; then
     daemon+=(-DPROBE_DEV_REPLACE "-DPROBE_BUILD_ID=0x${build_id}ULL")
     echo "Development build (replaces a running Kabuki), worker build id $build_id"
 fi
-"$sdk/bin/prospero-clang++" "${daemon[@]}" -Werror -Wno-deprecated-literal-operator -std=c++20 "$repo/src/daemon/controller.cpp" \
+"$sdk/bin/prospero-clang++" "${daemon[@]}" -Werror -std=c++20 "$repo/src/daemon/controller.cpp" \
     "$repo/src/loader/stable_shellui_injector.cpp" "$repo/src/loader/remote_call.cpp" \
     "$out/pt.o" "$out/elfldr.o" "$out/blob.o" -lSceSystemService -lkernel_sys -lSceLibcInternal \
     -Wl,--gc-sections -o "$repo/build/kabuki-ps5.elf"
